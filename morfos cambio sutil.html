@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MORPHOS — Organismo Fluido</title>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@300;400;900&family=EB+Garamond:ital@1&display=swap" rel="stylesheet">
+<style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; cursor: none; font-family: 'Orbitron', sans-serif; }
+    canvas { display: block; position: fixed; inset: 0; background: #000; }
+
+    #cursor {
+        position: fixed; width: 16px; height: 16px;
+        border: 1px solid rgba(255,255,255,0.4);
+        border-radius: 50%; pointer-events: none; z-index: 100;
+        transform: translate(-50%, -50%); transition: border-color 0.3s;
+        mix-blend-mode: difference;
+    }
+
+    #state-display { position: fixed; top: 30px; left: 30px; z-index: 20; pointer-events: none; }
+    .state-label { font-size: 8px; letter-spacing: 0.4em; color: rgba(255,255,255,0.3); text-transform: uppercase; }
+    .state-name { font-size: 24px; font-weight: 900; letter-spacing: 0.2em; margin-top: 5px; transition: color 3s; }
+
+    #meta { position: fixed; top: 30px; right: 30px; text-align: right; z-index: 20; pointer-events: none; }
+    .meta-val { font-size: 8px; letter-spacing: 0.2em; color: rgba(255,255,255,0.2); line-height: 1.8; }
+
+    #ai-overlay {
+        position: fixed; bottom: 100px; left: 50%; transform: translateX(-50%);
+        z-index: 20; text-align: center; pointer-events: none; opacity: 0; transition: opacity 1.2s;
+    }
+    #ai-overlay.show { opacity: 1; }
+    .ai-directive { font-family: 'EB Garamond', serif; font-style: italic; font-size: 18px; color: rgba(255,255,255,0.8); }
+
+    #ai-btn {
+        position: fixed; bottom: 30px; right: 30px; z-index: 20;
+        background: transparent; border: 1px solid rgba(255,255,255,0.1);
+        color: rgba(255,255,255,0.4); font-family: 'Orbitron', sans-serif;
+        font-size: 8px; letter-spacing: 0.3em; padding: 12px 20px;
+        cursor: pointer; transition: all 0.4s;
+    }
+    #ai-btn:hover { border-color: rgba(255,255,255,0.6); color: #fff; }
+
+    #loading {
+        position: fixed; inset: 0; background: #000; display: flex;
+        align-items: center; justify-content: center; z-index: 200; flex-direction: column;
+        transition: opacity 1.5s;
+    }
+    #loading.hide { opacity: 0; pointer-events: none; }
+</style>
+</head>
+<body>
+
+<div id="loading">
+    <div style="color:white; letter-spacing:0.5em; font-weight:900;">MORPHOS</div>
+    <div style="color:rgba(255,255,255,0.2); font-size:8px; margin-top:10px;">SINTETIZANDO CROMATÓFOROS</div>
+</div>
+
+<canvas id="c"></canvas>
+<div id="cursor"></div>
+
+<div id="state-display">
+    <div class="state-label">Sistema Morfogenético</div>
+    <div class="state-name" id="state-name">NEBULA</div>
+</div>
+
+<div id="meta">
+    <div class="meta-val" id="seed-display">SEMILLA · 0</div>
+    <div class="meta-val" id="particle-count">PARTÍCULAS · 0</div>
+</div>
+
+<div id="ai-overlay">
+    <div class="ai-directive" id="ai-directive-text"></div>
+</div>
+
+<button id="ai-btn">TRANSFORMAR ORGANISMO</button>
+
+<script>
+'use strict';
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H, SEED;
+const particles = [];
+const N_PARTICLES = 3500;
+let currentState = 'NEBULA';
+let prevState = 'NEBULA';
+let stateBlend = 1.0;
+let t = 0;
+
+const STATES = ['NEBULA','VORTEX','CRYSTAL','BLOOM','STORM','NEURAL'];
+const COLORS = {
+    NEBULA: '#4EA8FF', VORTEX: '#CC44FF', CRYSTAL: '#88EEFF',
+    BLOOM: '#FF8833', STORM: '#FFEE44', NEURAL: '#44FF88'
+};
+
+const FLOW = {
+    NEBULA: { scale:0.002, speed:0.8, curl:0.2 },
+    VORTEX: { scale:0.005, speed:2.0, curl:10.0 },
+    CRYSTAL: { scale:0.01, speed:0.4, curl:0 },
+    BLOOM: { scale:0.004, speed:1.2, curl:2.0 },
+    STORM: { scale:0.008, speed:2.5, curl:1.0 },
+    NEURAL: { scale:0.006, speed:1.0, curl:0.5 }
+};
+
+function resize() {
+    W = canvas.width = window.innerWidth;
+    H = canvas.height = window.innerHeight;
+}
+
+// Simple Noise
+const perm = Array.from({length: 512}, () => Math.floor(Math.random() * 256));
+function noise(x, y) {
+    let X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    x -= Math.floor(x); y -= Math.floor(y);
+    let u = x * x * (3 - 2 * x), v = y * y * (3 - 2 * y);
+    let a = perm[X] + Y, aa = perm[a], ab = perm[a + 1];
+    let b = perm[X + 1] + Y, ba = perm[b], bb = perm[b + 1];
+    return lerp(v, lerp(u, grad(perm[aa], x, y), grad(perm[ba], x - 1, y)),
+                   lerp(u, grad(perm[ab], x, y - 1), grad(perm[bb], x - 1, y - 1)));
+}
+function lerp(t, a, b) { return a + t * (b - a); }
+function grad(hash, x, y) {
+    let h = hash & 15;
+    return ((h < 8 ? x : y) * ((h & 1) ? -1 : 1) + (h < 4 ? y : x) * ((h & 2) ? -1 : 1));
+}
+
+class Particle {
+    constructor() { this.reset(true); }
+    reset(rand = false) {
+        this.x = rand ? Math.random() * W : W/2 + (Math.random()-0.5)*100;
+        this.y = rand ? Math.random() * H : H/2 + (Math.random()-0.5)*100;
+        this.life = Math.random() * 0.5 + 0.5;
+        this.v = {x:0, y:0};
+        this.size = Math.random() * 1.5 + 0.5;
+    }
+    update(flow) {
+        let n = noise(this.x * flow.scale, this.y * flow.scale + t * 0.1);
+        let angle = n * Math.PI * 4;
+        this.v.x = lerp(0.1, this.v.x, Math.cos(angle) * flow.speed);
+        this.v.y = lerp(0.1, this.v.y, Math.sin(angle) * flow.speed);
+        this.x += this.v.x;
+        this.y += this.v.y;
+        this.life -= 0.002;
+        if (this.life <= 0 || this.x < 0 || this.x > W || this.y < 0 || this.y > H) this.reset();
+    }
+    draw(color) {
+        ctx.fillStyle = color;
+        ctx.globalAlpha = this.life * 0.6;
+        ctx.beginPath();
+        ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+        ctx.fill();
+    }
+}
+
+function init() {
+    resize();
+    SEED = Math.floor(Math.random() * 9999);
+    document.getElementById('seed-display').textContent = `SEMILLA · ${SEED}`;
+    document.getElementById('particle-count').textContent = `PARTÍCULAS · ${N_PARTICLES}`;
+    for(let i=0; i<N_PARTICLES; i++) particles.push(new Particle());
+}
+
+function setState(s) {
+    if (s === currentState) return;
+    prevState = currentState;
+    currentState = s;
+    stateBlend = 0;
+    const el = document.getElementById('state-name');
+    el.textContent = s;
+    el.style.color = COLORS[s];
+}
+
+const mouse = { x: 0, y: 0 };
+window.addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY;
+    document.getElementById('cursor').style.left = e.clientX + 'px';
+    document.getElementById('cursor').style.top = e.clientY + 'px';
+});
+
+function loop() {
+    // Fondo ultra sutil para estelas infinitas (sin capas)
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.03)'; 
+    ctx.fillRect(0, 0, W, H);
+
+    if (stateBlend < 1) stateBlend += 0.003; // Transición de color muy lenta
+
+    const fA = FLOW[prevState], fB = FLOW[currentState];
+    const currentFlow = {
+        scale: lerp(stateBlend, fA.scale, fB.scale),
+        speed: lerp(stateBlend, fA.speed, fB.speed)
+    };
+
+    // Dibujar partículas
+    particles.forEach(p => {
+        p.update(currentFlow);
+        p.draw(COLORS[currentState]);
+    });
+
+    t += 0.01;
+    requestAnimationFrame(loop);
+}
+
+document.getElementById('ai-btn').addEventListener('click', () => {
+    const next = STATES[Math.floor(Math.random() * STATES.length)];
+    setState(next);
+});
+
+init();
+loop();
+setTimeout(() => document.getElementById('loading').classList.add('hide'), 1500);
+</script>
+</body>
+</html>
